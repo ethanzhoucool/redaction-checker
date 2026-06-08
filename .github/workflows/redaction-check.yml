@@ -1,0 +1,92 @@
+# =============================================================================
+# TEMPLATE — redaction-checker CI gate (MSTG-STORAGE-9 / PCI-MSTG)
+#
+# Fails the PR if any sensitive screen leaks into the iOS app-switcher or Android
+# recents snapshot. Copy into the *target app's* repo and fill in the marked spots.
+#
+# The iOS path is macOS-only (reads the simulator's SplashBoard snapshots and decodes
+# LZFSE via system libcompression), so this runs on a macOS runner. The Android path
+# uses the Revyl CLI as the capture backend (no local emulator needed in CI).
+# =============================================================================
+name: redaction-check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  redaction-check:
+    runs-on: macos-14          # macOS needed for the iOS SplashBoard/LZFSE path
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OCR engine
+        run: brew install tesseract
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install pillow numpy pytesseract texture2ddecoder pyyaml
+
+      # --- TEMPLATE: install the Revyl CLI + authenticate -------------------
+      # Provide REVYL_API_KEY as a repo secret. See https://github.com/RevylAI/revyl-cli
+      - name: Set up Revyl CLI
+        env:
+          REVYL_API_KEY: ${{ secrets.REVYL_API_KEY }}
+        run: |
+          # curl -fsSL https://revyl.ai/install.sh | sh
+          # revyl auth login --api-key "$REVYL_API_KEY"
+          echo "TODO: install + authenticate the Revyl CLI for the Android backend"
+
+      # --- TEMPLATE: boot the iOS simulator and install the build -----------
+      # Build/download your .app, then boot a simulator and install it so the
+      # checker can find the bundle's SplashBoard snapshots on disk.
+      - name: Boot iOS simulator
+        run: |
+          # xcrun simctl boot "iPhone 15"
+          # xcrun simctl install booted path/to/RedactionDemo.app
+          echo "TODO: boot a simulator and install the iOS build"
+
+      - name: Run redaction-checker
+        id: check
+        run: |
+          source .venv/bin/activate
+          # Non-zero exit on any FAIL gates the PR.
+          python -m redaction_check sensitive-screens.yml
+
+      # Always upload evidence — the recovered-snapshot PNGs are the proof.
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redaction-evidence
+          path: |
+            report/
+            report.md
+
+      # Post the result (and a link to the evidence) as a PR comment.
+      - name: Comment result on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '### redaction-checker — MSTG-STORAGE-9 / PCI-MSTG\n\n';
+            try {
+              body += '```\n' + fs.readFileSync('report.md', 'utf8') + '\n```\n';
+            } catch {
+              body += '_No report produced — the run errored before any verdict._\n';
+            }
+            body += '\nEvidence PNGs are attached as the **redaction-evidence** artifact on this run.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

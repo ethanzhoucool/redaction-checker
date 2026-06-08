@@ -1,0 +1,37 @@
+# sensitive-screens.yml — describe the sensitive screens redaction-checker should test.
+#
+# Each platform lists screens to drive to, background, and snapshot. The checker recovers
+# the OS snapshot (iOS app-switcher card / Android recents thumbnail) and decides PASS/FAIL.
+# Control: OWASP MASVS MSTG-STORAGE-9 / PCI-MSTG.
+
+ios:
+  bundle_id: com.revyl.redactiondemo
+  udid: "booted"                                  # simulator UDID, or "booted" for the active one
+  app_path: fixtures/ios/build/Build/Products/Debug-iphonesimulator/Cashly.app
+  background_via: "launch_other"                  # force the OS to snapshot by launching another app
+  screens:
+    # A leaky payment screen — no privacy overlay on resign; the card form is captured verbatim.
+    # Drive via launch args (the fixture reads them in Router.init); real apps usually use `deeplink`.
+    - name: "Add Card (leaky)"
+      launch_args: "leaky"
+      sensitive: true
+    # The same screen done right — a cover view obscures the window on scenePhase .inactive.
+    - name: "Add Card (redacted)"
+      launch_args: "redacted"
+      sensitive: true
+
+android:
+  backend: "revyl"                                # "revyl" (cloud device) or "adb" (local emulator)
+  revyl_app_id: "<your-revyl-app-id>"             # required when backend: revyl
+  package: com.revyl.redactiondemo
+  screens:
+    # FLAG_SECURE set too late (onPause) — the recents thumbnail still leaks the SSN field.
+    - name: "SSN entry (leaky)"
+      instruction: "open the leaky SSN entry screen"
+      sensitive: true
+
+# Regexes whose presence in a recovered snapshot constitutes a leak.
+# Omit to use the defaults in redaction_check/contract.py (SSN, PAN, CVV, SSN/routing keywords).
+secrets:
+  - "\\b\\d{3}-\\d{2}-\\d{4}\\b"        # US SSN
+  - "\\b(?:\\d[ -]?){13,19}\\b"         # PAN / payment card number

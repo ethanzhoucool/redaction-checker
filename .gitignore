@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Generated artifacts
+report/
+*.astc
+
+# Xcode build products (fixture is rebuilt locally)
+fixtures/ios/build/
+DerivedData/
+
+# macOS
+.DS_Store
