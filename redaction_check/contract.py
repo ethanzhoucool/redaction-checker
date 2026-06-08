@@ -12,7 +12,7 @@ from typing import Optional
 # Patterns whose presence in a backgrounded snapshot constitutes a leak.
 DEFAULT_SECRET_PATTERNS: list[str] = [
     r"\b\d{3}-\d{2}-\d{4}\b",        # US SSN
-    r"\b(?:\d[ -]?){13,19}\b",       # PAN / payment card number
+    r"\b\d(?:[ -]?\d){12,18}\b",     # PAN / payment card (13-19 digits, ends on a digit)
     r"(?i)\bCVV\b",
     r"(?i)\bSSN\b",
     r"(?i)\brouting\b",
@@ -43,4 +43,12 @@ class ScreenResult:
 
 
 def compile_secret_patterns(patterns: Optional[list[str]] = None) -> list[re.Pattern]:
-    return [re.compile(p) for p in (patterns or DEFAULT_SECRET_PATTERNS)]
+    compiled: list[re.Pattern] = []
+    for p in (patterns or DEFAULT_SECRET_PATTERNS):
+        try:
+            compiled.append(re.compile(p))
+        except re.error:
+            # Skip a malformed operator-supplied pattern rather than crash the
+            # whole run; the other patterns still apply.
+            continue
+    return compiled

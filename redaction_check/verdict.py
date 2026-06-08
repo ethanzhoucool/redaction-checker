@@ -139,9 +139,13 @@ def evaluate(
     metrics["blur"] = round(blur, 4)
 
     # --- blank detection ----------------------------------------------------
-    blank = (ocr_chars == 0 and pixel_stddev < BLANK_STDDEV) or (
-        compressed_bytes is not None and compressed_bytes < BLANK_COMPRESSED_BYTES
-    )
+    # A snapshot only counts as "blank" when it carries no readable text. A small
+    # or flat card that STILL shows readable content is not blank and must reach
+    # the leak checks below — otherwise a tiny-but-readable leak (e.g. a balance
+    # on a solid background, <4 KB) would be silently passed.
+    no_readable = ocr_chars < READABLE_OCR_CHARS
+    small_payload = compressed_bytes is not None and compressed_bytes < BLANK_COMPRESSED_BYTES
+    blank = no_readable and (pixel_stddev < BLANK_STDDEV or small_payload)
     metrics["blank"] = bool(blank)
 
     heavily_blurred = blur < BLUR_VAR_LAPLACIAN

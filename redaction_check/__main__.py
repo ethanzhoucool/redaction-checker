@@ -21,12 +21,15 @@ from . import report as report_mod
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="redaction-check",
                                  description="Confirm sensitive screens are obscured in the app switcher / recents.")
-    ap.add_argument("--config", default="sensitive-screens.yml", help="path to the screens config")
+    ap.add_argument("config", nargs="?", default=None,
+                    help="path to the screens config (default: sensitive-screens.yml)")
+    ap.add_argument("--config", dest="config_flag", default=None,
+                    help="alternative to the positional config path")
     ap.add_argument("--platform", choices=["ios", "android", "both"], default="both")
     ap.add_argument("--out", default="report", help="output directory for the report + evidence")
     args = ap.parse_args(argv)
 
-    cfg_path = Path(args.config)
+    cfg_path = Path(args.config or args.config_flag or "sensitive-screens.yml")
     if not cfg_path.exists():
         print(f"config not found: {cfg_path}", file=sys.stderr)
         return 2
@@ -50,7 +53,7 @@ def main(argv=None) -> int:
 
     # summary
     print("\n" + "=" * 56)
-    failed = 0
+    failed = errored = 0
     for r in results:
         mark = {"PASS": "✓", "FAIL": "✗", "ERROR": "!"}.get(r.verdict.status, "?")
         print(f"  {mark} [{r.platform}] {r.name}: {r.verdict.status}"
@@ -59,10 +62,16 @@ def main(argv=None) -> int:
             print(f"      leaked: {', '.join(r.verdict.leaked_text[:4])}")
         if r.verdict.status == FAIL:
             failed += 1
+        elif r.verdict.status == ERROR:
+            errored += 1
     print("=" * 56)
     print(f"report: {Path(args.out) / 'report.md'}")
-    print(f"{failed} FAIL / {len(results)} screens")
-    return 1 if failed else 0
+    print(f"{failed} FAIL / {errored} ERROR / {len(results)} screens")
+    # Non-zero on FAIL (compliance) and on ERROR (the check didn't complete) so a
+    # broken run never reads as a green CI pass.
+    if failed:
+        return 1
+    return 2 if errored else 0
 
 
 if __name__ == "__main__":

@@ -277,6 +277,10 @@ def _resolve_revyl_screenshot(cli_output: str, out_dir: str, name: str) -> Path 
     candidates += re.findall(r"""['"]([^'"]+\.png)['"]""", text, flags=re.IGNORECASE)
     # Bare path token ending in .png (absolute or relative).
     candidates += re.findall(r"(\S+\.png)\b", text, flags=re.IGNORECASE)
+    # Keyword-anchored path that may contain spaces (e.g. "saved to /My Shots/a.png").
+    candidates += re.findall(
+        r"(?:saved(?:\s+to)?|wrote|written\s+to|output|->|:)\s+(.+?\.png)\b",
+        text, flags=re.IGNORECASE)
 
     seen: set[str] = set()
     ordered: list[str] = []

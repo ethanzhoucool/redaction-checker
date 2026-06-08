@@ -13,9 +13,9 @@ from PIL import Image
 from redaction_check.contract import PASS, FAIL, ERROR
 from redaction_check.verdict import evaluate
 
-_SPIKE = Path(__file__).resolve().parents[1] / "spike"
-_EXPO = _SPIKE / "expo_content.png"      # readable content -> must FAIL (leak)
-_BLANK = _SPIKE / "loop_blank.png"       # solid black, empty OCR -> must PASS
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+_EXPO = _FIXTURES / "expo_content.png"   # real decoded leak: readable content -> must FAIL
+_BLANK = _FIXTURES / "loop_blank.png"    # real decoded blank: solid black, empty OCR -> must PASS
 
 
 class TestEvaluate(unittest.TestCase):

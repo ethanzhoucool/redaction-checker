@@ -6,16 +6,19 @@ Mechanics (all via `xcrun simctl`, no third-party device tooling):
   2. per screen: cold-launch at the target route (terminate -> launch with args),
      or open a deep link
   3. screenshot the live (foregrounded) screen as ground truth
-  4. background the app (launch a neutral system app) so SpringBoard writes the
-     SplashBoard snapshot
-  5. wait for a snapshot newer than the trigger, decode it, and evaluate it
+  4. clear stale cards, then background the app (launch a neutral system app) so
+     SpringBoard writes a fresh SplashBoard snapshot
+  5. wait for the fresh snapshot to appear, decode it, and evaluate it
 """
 from __future__ import annotations
 
-import shutil
+import re
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+_UUID = r"[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}"
 
 from . import ios_snapshot
 from .contract import Verdict, ScreenResult, ERROR
@@ -33,20 +36,19 @@ def _resolve_udid(udid: str | None) -> str:
     if udid and udid != "booted":
         return udid
     out = _sim("list", "devices", "booted").stdout
-    for line in out.splitlines():
-        if "(Booted)" in line and "(" in line:
-            # ... DeviceName (UDID) (Booted)
-            return line.split("(")[-2].strip().rstrip(")").strip() or _first_available()
+    m = re.search(rf"\(({_UUID})\)\s*\(Booted\)", out)
+    if m:
+        return m.group(1)
     return _first_available()
 
 
 def _first_available() -> str:
     out = _sim("list", "devices", "available").stdout
     for line in out.splitlines():
-        if "iPhone" in line and "(" in line and "unavailable" not in line.lower():
-            parts = line.split("(")
-            if len(parts) >= 2:
-                return parts[-2].strip().rstrip(")").strip()
+        if "iPhone" in line and "unavailable" not in line.lower():
+            m = re.search(rf"\(({_UUID})\)", line)
+            if m:
+                return m.group(1)
     raise RuntimeError("no available iPhone simulator found")
 
 
@@ -62,17 +64,23 @@ def _background(device: str) -> bool:
     return False
 
 
-def _newest_mtime(bundle_id: str, udid: str) -> float:
-    snaps = ios_snapshot.find_snapshots(bundle_id, udid=udid)
-    return snaps[0].path.stat().st_mtime if snaps else 0.0
+def _clear_snapshots(bundle_id: str, udid: str) -> None:
+    """Delete existing app-switcher snapshots for this bundle so the next one is
+    unambiguous — removes the mtime race where a previous screen's (or run's)
+    card is mistaken for the one we just triggered."""
+    for snap in ios_snapshot.find_snapshots(bundle_id, udid=udid, include_downscaled=True):
+        try:
+            snap.path.unlink()
+        except OSError:
+            pass
 
 
 def run_ios(config: dict, out_dir: str) -> list[ScreenResult]:
     ios = config.get("ios", {})
     bundle_id = ios["bundle_id"]
     sel = ios.get("udid") or "booted"
-    udid = _resolve_udid(sel)                          # real UDID — used to locate snapshots on disk
-    device = "booted" if sel == "booted" else udid     # selector for simctl commands
+    udid = _resolve_udid(sel)       # one resolved UDID for both simctl and snapshot lookup
+    device = udid
     out = Path(out_dir).resolve()   # simctl io screenshot needs an absolute path
     out.mkdir(parents=True, exist_ok=True)
     secrets = config.get("secrets")
@@ -80,7 +88,10 @@ def run_ios(config: dict, out_dir: str) -> list[ScreenResult]:
     _boot(udid)
     app_path = ios.get("app_path")
     if app_path and Path(app_path).exists():
-        _sim("install", device, app_path)
+        install = _sim("install", device, app_path)
+        if install.returncode != 0:
+            print(f"  warning: `simctl install` failed ({install.stderr.strip()[:160]}); "
+                  f"checking whatever build is already installed.", file=sys.stderr)
 
     results: list[ScreenResult] = []
     for i, screen in enumerate(ios.get("screens", [])):
@@ -101,31 +112,38 @@ def _check_screen(device, udid, bundle_id, screen, name, out: Path, secrets, idx
     # 1. navigate to the screen
     if screen.get("deeplink"):
         _sim("openurl", device, screen["deeplink"])
-    else:
+    elif screen.get("launch_args") is not None:
         _sim("terminate", device, bundle_id)
-        args = screen.get("launch_args") or []
+        args = screen["launch_args"]
         if isinstance(args, str):
             args = args.split()
         _sim("launch", device, bundle_id, *args)
+    else:
+        # No way to reach this screen on a local sim. Don't silently snapshot the
+        # default screen and pass it — that would be a false-negative compliance PASS.
+        return ScreenResult(
+            name=name, platform="ios", sensitive=screen.get("sensitive", True),
+            verdict=Verdict(status=ERROR, reasons=[
+                "iOS screen has no `deeplink` or `launch_args` — cannot navigate to it"]))
     time.sleep(2.2)
 
     # 2. live ground-truth screenshot
     live_path = out / f"{idx:02d}_{_slug(name)}_live.png"
     _sim("io", device, "screenshot", str(live_path))
 
-    # 3. background -> force the OS to write the app-switcher snapshot
-    trigger = _newest_mtime(bundle_id, udid)
+    # 3. clear stale cards, then background -> force a FRESH app-switcher snapshot
+    _clear_snapshots(bundle_id, udid)
     if not _background(device):
         return ScreenResult(name=name, platform="ios", sensitive=screen.get("sensitive", True),
                             live_image=str(live_path),
                             verdict=Verdict(status=ERROR, reasons=["could not background the app"]))
 
-    # 4. wait for a snapshot newer than the trigger
+    # 4. wait for the freshly-written snapshot to appear
     snap = None
     deadline = time.time() + 8
     while time.time() < deadline:
         snaps = ios_snapshot.find_snapshots(bundle_id, udid=udid)
-        if snaps and snaps[0].path.stat().st_mtime > trigger + 0.01:
+        if snaps:
             snap = snaps[0]
             break
         time.sleep(0.4)
