@@ -27,9 +27,23 @@ Both render identically in normal use. Only the snapshot tells the truth.
 
 A redacted screen produces a **blank/obscured** snapshot. A leaky screen produces a **readable** one. The whole tool is built around making that difference machine-checkable.
 
-### iOS — recover the snapshot the OS actually wrote
+### iOS — two backends
 
-iOS doesn't hand you a screenshot; it persists the app-switcher card to disk as an Apple **`AAPL`** container with a misleading `.ktx` extension. We reverse that format end-to-end, with **no external binaries**:
+**Revyl cloud device (default, no Xcode/Mac needed) — `backend: revyl`.**
+The iOS app switcher can't be opened through the CLI's synthetic touches (the gesture is a swipe-up-*and-hold*, which `swipe`/`drag` can't express, and it's a SpringBoard-level system gesture WebDriverAgent doesn't reach). So instead of opening the switcher, we trigger the *same* OS event another way: pulling **Control Center** makes the app resign-active (`scenePhase != .active`) — the exact transition the OS uses when it writes the app-switcher snapshot. A correctly-built app draws its privacy cover on that transition; a leaky one keeps rendering its content. We screenshot the screen active, pull Control Center, screenshot it inactive, and compare.
+
+Control Center dims and blurs the backdrop uniformly — which defeats brightness, OCR, and absolute pixel-diff — so the verdict uses a **zero-mean normalized cross-correlation (ZNCC)** between the active and inactive frames. ZNCC is invariant to global dim/blur and keys only on layout:
+
+```
+active frame  ⨉  inactive frame  ──►  corr
+   corr high  →  inactive still looks like the live screen  →  not obscured  →  FAIL
+   corr low   →  content was replaced by a cover            →  PASS
+```
+
+Measured on the fixture: leaky **~0.88**, redacted **~0.05**. (The blur means this backend gives a reliable PASS/FAIL but can't quote the exact leaked digits — use the local backend below for that.)
+
+**Local simulator (macOS) — `backend: simctl`.**
+For a crisp, unblurred recovery — so you can quote the leaked card number verbatim — decode the snapshot the OS wrote to disk. iOS persists the app-switcher card as an Apple **`AAPL`** container with a misleading `.ktx` extension; we reverse it end-to-end, with **no external binaries**:
 
 ```
 SplashBoard/Snapshots/<scene-with-bundle-id>/*.ktx
@@ -45,34 +59,36 @@ SplashBoard/Snapshots/<scene-with-bundle-id>/*.ktx
         PNG  ──►  OCR  ──►  verdict      (Tesseract + secret regex)
 ```
 
-The compressed size alone is most of the signal: a blank/redacted snapshot LZFSE-crushes to **~2 KB**; a real leak is **50 KB+** and the text comes back OCR-readable. We decode it the rest of the way to produce side-by-side evidence images.
+The compressed size alone is most of the signal: a blank/redacted snapshot LZFSE-crushes to **~2 KB**; a real leak is **50 KB+** and the text comes back OCR-readable.
 
-### Android — let `FLAG_SECURE` blacken the frame
+### Android — read the recents thumbnail, which the OS blanks
 
-Android is simpler: a window with `FLAG_SECURE` (or, on API 33+, `setRecentsScreenshotEnabled(false)`) makes screen capture and the recents thumbnail come back **black**. So we don't reverse a file — we just capture the screen and check whether it went dark.
+A window with `FLAG_SECURE` (or, on API 33+, `setRecentsScreenshotEnabled(false)`) makes the **recents thumbnail** come back black. Important nuance, learned on Revyl's cloud devices: a `revyl device screenshot` of the *live* secured screen reads straight past `FLAG_SECURE` and captures the content — so the live screen is kept as evidence only and never judged. The verdict is taken from the **recents thumbnail**, which the OS itself blanks. We drive to the screen, open the recents overview, and check whether that thumbnail went dark.
 
 ```
-revyl device screenshot   (cloud device — primary)
-        │   └─ adb fallback for a local emulator
+drive to screen ──► live screenshot (evidence only)
+        │
         ▼
-   captured frame
+open recents ──► recents thumbnail   (cloud device — primary; adb fallback for a local emulator)
         │
         ▼
   black? ──► PASS        readable? ──► OCR ──► secret regex ──► FAIL
 ```
 
-Primary capture backend is **Revyl** (`revyl device screenshot`); a local-emulator `adb` path is the fallback.
+Primary capture backend is **Revyl** (`revyl device`); a local-emulator `adb` path is the fallback.
 
 ### Shared verdict engine
 
 Both platforms feed one engine: OCR + secret-regex (SSN / PAN / CVV) + blank/blur/compressed-size heuristics → `PASS` / `FAIL`, with side-by-side evidence images and a markdown/HTML report.
 
-| Stage | iOS | Android |
+| Stage | iOS (Revyl, default) | Android (Revyl) |
 |---|---|---|
-| Drive to screen | deeplink | `revyl device instruction` (natural language) |
-| Background it | launch another app | press Home |
-| Capture | decode AAPL snapshot from disk | `revyl device screenshot` |
-| Decide | OCR + regex + compressed-size | OCR + regex + blackness |
+| Drive to screen | `nav` steps / `instruction` | `revyl device instruction` (natural language) |
+| Make it inactive | pull Control Center | open the recents overview |
+| Capture | screenshot active + inactive | recents thumbnail |
+| Decide | active↔inactive correlation (ZNCC) | OCR + regex + blackness |
+
+The local iOS backend (`simctl`) instead reaches screens via `deeplink`/`launch_args`, backgrounds by launching another app, decodes the AAPL snapshot from disk, and decides on OCR + regex + compressed-size.
 
 ---
 
@@ -91,7 +107,7 @@ brew install tesseract
 # https://github.com/RevylAI/revyl-cli
 ```
 
-The iOS path is macOS-only — it reads from `~/Library/Developer/CoreSimulator/Devices` and decodes LZFSE via the system `libcompression.dylib`. No Xcode command-line decoder needed.
+The default iOS backend (`revyl`) runs anywhere the Revyl CLI does — no Mac or Xcode required. The local iOS backend (`simctl`) is macOS-only: it reads from `~/Library/Developer/CoreSimulator/Devices` and decodes LZFSE via the system `libcompression.dylib` (no Xcode command-line decoder needed).
 
 ---
 
@@ -110,10 +126,15 @@ A minimal config:
 
 ```yaml
 ios:
+  backend: "revyl"            # "revyl" (cloud device, default) or "simctl" (local macOS sim)
   bundle_id: com.revyl.redactiondemo
-  udid: "booted"
+  revyl_app_id: "<your-revyl-app-id>"
   screens:
-    - { name: "Add Card", deeplink: "redactiondemo://payment/leaky", sensitive: true }
+    # revyl backend reaches the screen via `nav` (or a single `instruction`):
+    - name: "Add Card"
+      nav: [ { launch: true }, { wait: 2 }, { instruction: "open the add-card screen" } ]
+      sensitive: true
+    # simctl backend instead uses `deeplink` or `launch_args`.
 
 android:
   backend: "revyl"

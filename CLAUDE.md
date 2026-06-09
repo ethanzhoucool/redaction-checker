@@ -22,19 +22,34 @@ a missed sensitive screen is the whole failure mode.
 ## How to drive to each screen
 
 The two platforms reach screens differently — match the config field to the platform.
+First pick the iOS backend with `ios.backend`: **`revyl`** (cloud device, the default —
+no Mac needed; backgrounds via Control Center and decides on an active↔inactive
+correlation) or **`simctl`** (local macOS simulator; decodes the on-disk AAPL snapshot
+for crisp text recovery).
 
-**iOS — deeplinks.** Reliable and fast. Find the URL scheme in the app's
-`Info.plist` (`CFBundleURLSchemes`) or its routing code, then give each screen a
-`deeplink`. The tool launches the app at that deeplink, then backgrounds it via
-`background_via` (default `launch_other` — launch another app to force the snapshot).
+**iOS (`revyl` backend) — `nav` steps or an `instruction`.** There are no deep links on
+the cloud sim (the app's URL scheme usually isn't registered), and the app switcher
+itself is unreachable, so reach the screen with a `nav` list of steps —
+`kill` / `launch` / `tap [x,y]` / `instruction` / `deeplink` / `wait` — or a single
+natural-language `instruction` (which cold-launches then grounds it). Prefer
+`instruction` for real apps; use coordinate `tap` only when grounding is unreliable.
+
+```yaml
+screens:
+  - name: "Add Card"
+    nav: [ { launch: true }, { wait: 2 }, { instruction: "open the add-card screen" } ]
+    sensitive: true
+```
+
+**iOS (`simctl` backend) — deeplinks.** Reliable and fast on a local sim. Find the URL
+scheme in the app's `Info.plist` (`CFBundleURLSchemes`) or routing code and give each
+screen a `deeplink` (or `launch_args`). The tool launches the app there, then backgrounds
+it via `background_via` (default `launch_other` — launch another app to force the snapshot).
 
 ```yaml
 screens:
   - { name: "Add Card", deeplink: "redactiondemo://payment/leaky", sensitive: true }
 ```
-
-If a screen has no deeplink, fall back to a short natural-language `instruction`
-(same field as Android) — but prefer deeplinks on iOS; they're deterministic.
 
 **Android — natural language via Revyl.** Reach screens with `revyl device instruction`
 by describing the destination. Keep instructions short, imperative, and about the
@@ -52,12 +67,15 @@ screens:
 
 ```yaml
 ios:
-  bundle_id: com.revyl.redactiondemo      # used to locate the SplashBoard snapshot on disk
-  udid: "booted"                          # simulator UDID, or "booted"
-  app_path: fixtures/ios/build/App.app    # optional: install if not present
-  background_via: "launch_other"          # how to force the OS to snapshot
+  backend: "revyl"                        # "revyl" (cloud device, default) or "simctl" (local macOS sim)
+  bundle_id: com.revyl.redactiondemo      # simctl: locates the on-disk SplashBoard snapshot
+  revyl_app_id: "<your-revyl-app-id>"     # revyl backend
+  udid: "booted"                          # simctl only: simulator UDID, or "booted"
+  app_path: fixtures/ios/build/App.app    # simctl only: install if not present
+  background_via: "launch_other"          # simctl only: how to force the OS to snapshot
   screens:
-    - { name: "...", deeplink: "scheme://path", sensitive: true }
+    # revyl backend: nav steps or an instruction; simctl backend: deeplink or launch_args
+    - { name: "...", nav: [ { launch: true }, { wait: 2 }, { instruction: "open ..." } ], sensitive: true }
 
 android:
   backend: "revyl"                        # "revyl" (cloud) or "adb" (local emulator)
