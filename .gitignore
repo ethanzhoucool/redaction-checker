@@ -5,7 +5,12 @@ __pycache__/
 
 # Generated artifacts
 report/
+report_*/
 *.astc
+
+# Scratch experiment captures
+spike/**/*.png
+spike/**/*.json
 
 # Xcode build products (fixture is rebuilt locally)
 fixtures/ios/build/

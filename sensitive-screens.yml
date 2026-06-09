@@ -5,29 +5,51 @@
 # Control: OWASP MASVS MSTG-STORAGE-9 / PCI-MSTG.
 
 ios:
+  # backend: "revyl"  -> Revyl cloud sim, Control Center backgrounding (no local Xcode).
+  #          "simctl" -> local Simulator + on-disk SplashBoard snapshot decode (default).
+  backend: "revyl"
   bundle_id: com.revyl.redactiondemo
-  udid: "booted"                                  # simulator UDID, or "booted" for the active one
-  app_path: fixtures/ios/build/Build/Products/Debug-iphonesimulator/Cashly.app
-  background_via: "launch_other"                  # force the OS to snapshot by launching another app
+  revyl_app_id: 464a37fa-c56f-46a8-bac7-21cc19ab8397
+  udid: "booted"                                  # simctl backend only: UDID or "booted"
+  app_path: fixtures/ios/build/Build/Products/Debug-iphonesimulator/Cashly.app  # simctl backend only
+  background_via: "launch_other"                  # simctl backend only
+  # Control Center gestures default to the verified 1320x2868 sim; override here for other sizes:
+  # gestures:
+  #   cc_open:  { direction: down, x: 600, y: 2, duration: 1200 }
+  #   cc_close: { direction: up,   x: 330, y: 1430, duration: 400 }
   screens:
-    # A leaky payment screen — no privacy overlay on resign; the card form is captured verbatim.
-    # Drive via launch args (the fixture reads them in Router.init); real apps usually use `deeplink`.
+    # A leaky payment screen — no privacy overlay on resign; the card form stays rendered
+    # when backgrounded. revyl backend reaches it via `nav`; simctl backend via `launch_args`.
     - name: "Add Card (leaky)"
-      launch_args: "leaky"
+      launch_args: "leaky"                         # simctl backend
+      nav:                                         # revyl backend: cold-launch to Home, tap the leaky button
+        - { kill: true }
+        - { launch: true }
+        - { wait: 2 }
+        - { tap: [220, 649] }
       sensitive: true
     # The same screen done right — a cover view obscures the window on scenePhase .inactive.
     - name: "Add Card (redacted)"
-      launch_args: "redacted"
+      launch_args: "redacted"                      # simctl backend
+      nav:                                         # revyl backend: cold-launch to Home, tap the redacted button
+        - { kill: true }
+        - { launch: true }
+        - { wait: 2 }
+        - { tap: [233, 705] }
       sensitive: true
 
 android:
   backend: "revyl"                                # "revyl" (cloud device) or "adb" (local emulator)
-  revyl_app_id: "<your-revyl-app-id>"             # required when backend: revyl
+  revyl_app_id: "29c50057-cd5d-46b4-8c29-c6fbf3cc9efe"  # required when backend: revyl
   package: com.revyl.redactiondemo
   screens:
-    # FLAG_SECURE set too late (onPause) — the recents thumbnail still leaks the SSN field.
+    # No FLAG_SECURE — the recents thumbnail captures the card + SSN form verbatim.
     - name: "SSN entry (leaky)"
-      instruction: "open the leaky SSN entry screen"
+      instruction: "open the leaky SSN screen"
+      sensitive: true
+    # FLAG_SECURE set via usePreventScreenCapture() — the recents thumbnail comes back black.
+    - name: "SSN entry (secured)"
+      instruction: "open the secured SSN screen"
       sensitive: true
 
 # Regexes whose presence in a recovered snapshot constitutes a leak.

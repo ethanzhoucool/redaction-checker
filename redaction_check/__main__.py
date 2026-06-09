@@ -37,9 +37,15 @@ def main(argv=None) -> int:
 
     results = []
     if args.platform in ("ios", "both") and config.get("ios"):
-        from .ios_runner import run_ios
-        print("→ iOS: driving simulator and harvesting app-switcher snapshots…")
-        results += run_ios(config, args.out)
+        ios_backend = (config["ios"].get("backend") or "simctl").lower()
+        if ios_backend == "revyl":
+            from .revyl_ios_runner import run_ios_revyl
+            print("→ iOS: driving Revyl cloud device (Control Center backgrounding)…")
+            results += run_ios_revyl(config, args.out)
+        else:
+            from .ios_runner import run_ios
+            print("→ iOS: driving local simulator and harvesting app-switcher snapshots…")
+            results += run_ios(config, args.out)
     if args.platform in ("android", "both") and config.get("android"):
         from .android_runner import run_android
         print("→ Android: driving device and capturing recents…")

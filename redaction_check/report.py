@@ -155,7 +155,8 @@ def build_evidence(result: ScreenResult, out_path: os.PathLike | str) -> Path:
 def _format_metrics(metrics: dict) -> str:
     parts = []
     for key in ("ocr_chars", "leak_hits", "pixel_stddev", "blur",
-                "diff_ratio", "compressed_bytes", "blank"):
+                "diff_ratio", "compressed_bytes", "blank",
+                "active_inactive_corr", "active_mean", "inactive_mean"):
         if key in metrics:
             parts.append(f"{key}={metrics[key]}")
     return ", ".join(parts) if parts else "(none)"
