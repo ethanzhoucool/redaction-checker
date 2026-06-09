@@ -1,21 +1,30 @@
 """Android runner for redaction-checker.
 
-Drives an Android device/emulator to each sensitive screen, captures what an
-attacker / the OS recents view would see, and asks the shared verdict engine
+Drives an Android device/emulator to each sensitive screen, captures what the
+OS recents (app-switcher) view shows for it, and asks the shared verdict engine
 whether sensitive content leaked.
 
-Signal (Android-specific): a screen marked ``FLAG_SECURE`` makes the OS render a
-BLACK frame for screen capture and the recents thumbnail. So:
+Signal (Android-specific): a screen marked ``FLAG_SECURE`` makes the OS blank
+its thumbnail in the recents view. So, for the RECENTS capture:
 
     screenshot is (near-)black  =>  PASS  (content was protected)
     readable sensitive content  =>  FAIL  (leak)
 
+WHY recents and not the live screen: on Revyl cloud devices,
+``revyl device screenshot`` of a LIVE ``FLAG_SECURE`` screen reads straight past
+the protection and captures the content (verified live 2026-06). Evaluating the
+live capture would falsely FAIL a correctly-secured screen, so it is kept as
+evidence only (``live_image``) and NEVER judged — the recents thumbnail, which
+the OS itself blanks, is the artifact that carries the verdict.
+
 Three backends, dispatched on ``config["android"]["backend"]``:
 
   * ``"revyl"``   (PRIMARY) — drive an already-active Revyl cloud session with the
-    ``revyl`` CLI. The Billing Test org has device concurrency = 1, so we assume
-    exactly ONE active session and drive it with ``device instruction``; we never
-    ``device start`` a second session.
+    ``revyl`` CLI. Per screen: ``device instruction`` to the screen, screenshot
+    the live screen (evidence only), ``device instruction`` into the recents
+    overview, screenshot THAT (the evaluated image), then best-effort reopen the
+    app for the next screen. The Billing Test org has device concurrency = 1, so
+    we assume exactly ONE active session and never ``device start`` a second one.
   * ``"emulator"`` (fallback) — local ``adb`` against an emulator/USB device.
   * mock          — if ``config["android"]["mock_screenshots"]`` is a list of image
     paths, ALL device I/O is skipped and ``evaluate()`` is run on those images
@@ -164,6 +173,11 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
 
     Concurrency = 1 in the Billing Test org, so we never start a session here;
     we assume one is live and steer it with `revyl device instruction`.
+
+    Per screen: drive -> live capture (evidence only) -> open recents ->
+    recents capture (the ONLY image evaluated) -> best-effort reopen the app.
+    The live screen is never judged: Revyl's screenshot bypasses FLAG_SECURE
+    (see module docstring), so only the recents thumbnail is trustworthy.
     """
     from PIL import Image
 
@@ -198,7 +212,36 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
                 )
                 continue
 
-        # 2) Let the UI settle past the shutter latency, then capture.
+        # 2) Let the UI settle past the shutter latency, then capture the LIVE
+        #    screen. Evidence only — Revyl's screenshot bypasses FLAG_SECURE, so
+        #    this image is never evaluated and a failure here is non-fatal.
+        time.sleep(_SHUTTER_WAIT_S)
+        live_path: Path | None = None
+        live_shot = _run_cli(["revyl", "device", "screenshot"])
+        if live_shot.ok:
+            live_path = _resolve_revyl_screenshot(
+                live_shot.stdout + "\n" + live_shot.stderr, out_dir, name, suffix="live"
+            )
+        live_image = str(live_path) if live_path is not None else None
+
+        # 3) Open the recents overview — the OS blanks the thumbnail there,
+        #    which is the artifact that matters. If we can't get there, we must
+        #    NOT fall back to judging the live capture (false FAILs/PASSes).
+        recents = _open_recents_revyl()
+        if not recents.ok:
+            results.append(
+                _error_result(
+                    name=name,
+                    sensitive=sensitive,
+                    reasons=[f"could not open the recents overview: {recents.detail}"],
+                    live_image=live_image,
+                )
+            )
+            _restore_app_revyl()  # best-effort; we may or may not be in recents
+            continue
+
+        # 4) Let the overview settle, then capture the recents thumbnail —
+        #    the ONLY image that gets evaluated.
         time.sleep(_SHUTTER_WAIT_S)
         shot = _run_cli(["revyl", "device", "screenshot"])
         if not shot.ok:
@@ -206,12 +249,16 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
                 _error_result(
                     name=name,
                     sensitive=sensitive,
-                    reasons=[f"`revyl device screenshot` failed: {shot.detail}"],
+                    reasons=[f"`revyl device screenshot` (recents) failed: {shot.detail}"],
+                    live_image=live_image,
                 )
             )
+            _restore_app_revyl()
             continue
 
-        png_path = _resolve_revyl_screenshot(shot.stdout + "\n" + shot.stderr, out_dir, name)
+        png_path = _resolve_revyl_screenshot(
+            shot.stdout + "\n" + shot.stderr, out_dir, name, suffix="recents"
+        )
         if png_path is None:
             results.append(
                 _error_result(
@@ -221,11 +268,17 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
                         "could not locate the PNG path in `revyl device screenshot` "
                         f"output: {(shot.stdout or shot.stderr or '').strip()[:300]!r}"
                     ],
+                    live_image=live_image,
                 )
             )
+            _restore_app_revyl()
             continue
 
-        # 3) Load + evaluate.
+        # 5) Bring the app back so the next screen's instruction starts from
+        #    the app, not the overview. Best-effort: failure is ignored.
+        _restore_app_revyl()
+
+        # 6) Load + evaluate the recents capture.
         try:
             img = Image.open(png_path)
             img.load()
@@ -236,6 +289,7 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
                     sensitive=sensitive,
                     reasons=[f"failed to open captured PNG {png_path!r}: {exc}"],
                     snapshot_image=str(png_path),
+                    live_image=live_image,
                 )
             )
             continue
@@ -247,7 +301,7 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
                 platform="android",
                 sensitive=sensitive,
                 verdict=verdict,
-                live_image=str(png_path),
+                live_image=live_image,
                 snapshot_image=str(png_path),
             )
         )
@@ -263,12 +317,38 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
     return results
 
 
-def _resolve_revyl_screenshot(cli_output: str, out_dir: str, name: str) -> Path | None:
+def _open_recents_revyl() -> _CliResult:
+    """Open the Android recents (app-switcher) overview on the active session.
+
+    Kept as its own helper so the mechanism is easy to swap once it has been
+    validated live — natural-language grounding of "recents" may need tuning,
+    and there is no dedicated recents key in the Revyl CLI today.
+    """
+    return _run_cli(
+        ["revyl", "device", "instruction", "open the recent apps overview screen"]
+    )
+
+
+def _restore_app_revyl() -> _CliResult:
+    """Best-effort: bring the app back to the foreground from the recents view.
+
+    The Revyl CLI has no guaranteed recents-exit primitive (no home keyevent),
+    so we ask for the app's card by instruction. Callers ignore failures — the
+    next screen's own instruction can usually recover from the overview.
+    """
+    return _run_cli(["revyl", "device", "instruction", "reopen the app from recents"])
+
+
+def _resolve_revyl_screenshot(
+    cli_output: str, out_dir: str, name: str, suffix: str = ""
+) -> Path | None:
     """Find the PNG the `revyl device screenshot` CLI wrote, and stage it in out_dir.
 
     The CLI prints the saved path somewhere in its output; formats vary, so we
     parse robustly: pull the last token that looks like a .png path, verify it
     exists, then copy it into out_dir under a stable per-screen filename.
+    ``suffix`` distinguishes multiple captures of the same screen (e.g. "live"
+    vs "recents") so they don't overwrite each other.
     """
     text = cli_output or ""
     candidates: list[str] = []
@@ -291,7 +371,8 @@ def _resolve_revyl_screenshot(cli_output: str, out_dir: str, name: str) -> Path 
             ordered.append(cc)
 
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "screen"
-    dest = Path(out_dir) / f"android_{safe}.png"
+    stem = f"android_{safe}_{suffix}" if suffix else f"android_{safe}"
+    dest = Path(out_dir) / f"{stem}.png"
 
     # Prefer the last existing candidate (CLIs usually print the final path last).
     for cand in reversed(ordered):
@@ -493,12 +574,13 @@ def _error_result(
     sensitive: bool,
     reasons: list[str],
     snapshot_image: str | None = None,
+    live_image: str | None = None,
 ) -> ScreenResult:
     return ScreenResult(
         name=name,
         platform="android",
         sensitive=sensitive,
         verdict=Verdict(status=ERROR, reasons=reasons),
-        live_image=None,
+        live_image=live_image,
         snapshot_image=snapshot_image,
     )
