@@ -133,6 +133,7 @@ ios:
     # revyl backend reaches the screen via `nav` (or a single `instruction`):
     - name: "Add Card"
       nav: [ { launch: true }, { wait: 2 }, { instruction: "open the add-card screen" } ]
+      expect: "Card number"   # text that must be on the active screen — confirms nav actually got there
       sensitive: true
     # simctl backend instead uses `deeplink` or `launch_args`.
 

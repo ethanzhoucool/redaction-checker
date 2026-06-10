@@ -33,13 +33,23 @@ itself is unreachable, so reach the screen with a `nav` list of steps —
 `kill` / `launch` / `tap [x,y]` / `instruction` / `deeplink` / `wait` — or a single
 natural-language `instruction` (which cold-launches then grounds it). Prefer
 `instruction` for real apps; use coordinate `tap` only when grounding is unreliable.
+Always set `expect:` to a short string that's visible on the *active* screen — the
+runner OCRs the active frame and ERRORs (rather than emitting a bogus verdict) if it's
+missing, which is how it knows navigation actually landed where you intended.
 
 ```yaml
 screens:
   - name: "Add Card"
     nav: [ { launch: true }, { wait: 2 }, { instruction: "open the add-card screen" } ]
+    expect: "Card number"   # confirms the active screen really is the one you meant to test
     sensitive: true
 ```
+
+The `revyl` iOS verdict is deliberately conservative: it only returns PASS with positive
+evidence (right screen reached, Control Center engaged, content replaced by a flat cover)
+and FAIL when the backgrounded frame still tracks the live screen. Anything ambiguous
+(CC didn't open, captured Control Center chrome, mid-range correlation) is `ERROR`, not a
+silent pass — re-run those rather than trusting them.
 
 **iOS (`simctl` backend) — deeplinks.** Reliable and fast on a local sim. Find the URL
 scheme in the app's `Info.plist` (`CFBundleURLSchemes`) or routing code and give each

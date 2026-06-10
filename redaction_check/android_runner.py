@@ -278,6 +278,23 @@ def _run_revyl(android, secret_patterns, out_dir) -> list[ScreenResult]:
         #    the app, not the overview. Best-effort: failure is ignored.
         _restore_app_revyl()
 
+        # 5b) Guard: if the "recents" capture is nearly identical to the live
+        #     screen, the overview likely never opened (the instruction no-op'd)
+        #     and we'd be judging the live screen — which bypasses FLAG_SECURE and
+        #     would falsely FAIL a secured screen. That's not a verdict; ERROR.
+        if live_path is not None and _frames_nearly_identical(live_path, png_path):
+            results.append(
+                _error_result(
+                    name=name,
+                    sensitive=sensitive,
+                    reasons=["recents capture is nearly identical to the live screen; the recents "
+                             "overview may not have opened (no verdict). Re-run or adjust the recents step."],
+                    snapshot_image=str(png_path),
+                    live_image=live_image,
+                )
+            )
+            continue
+
         # 6) Load + evaluate the recents capture.
         try:
             img = Image.open(png_path)
@@ -337,6 +354,28 @@ def _restore_app_revyl() -> _CliResult:
     next screen's own instruction can usually recover from the overview.
     """
     return _run_cli(["revyl", "device", "instruction", "reopen the app from recents"])
+
+
+def _frames_nearly_identical(a_path: Path, b_path: Path) -> bool:
+    """True if two captures are near-identical (ZNCC > 0.98) — used to detect a
+    recents step that no-op'd (the "recents" shot is really the live screen). A
+    genuine recents card differs (shrunk, dark surround), so a real leak won't trip
+    this; only a stayed-in-app no-op will. Never raises (returns False on error)."""
+    try:
+        import numpy as np
+        from PIL import Image
+
+        def prep(p):
+            arr = np.asarray(Image.open(p).convert("L").resize((64, 128)), dtype=np.float32)
+            return arr - arr.mean()
+
+        a, b = prep(a_path), prep(b_path)
+        da, db = float(np.sqrt((a * a).sum())), float(np.sqrt((b * b).sum()))
+        if da < 1e-3 or db < 1e-3:
+            return False  # one frame is uniform — not the no-op signature
+        return float((a * b).sum() / (da * db)) > 0.98
+    except Exception:  # noqa: BLE001 — the guard must never crash the run
+        return False
 
 
 def _resolve_revyl_screenshot(

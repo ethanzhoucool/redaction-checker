@@ -27,6 +27,7 @@ ios:
         - { launch: true }
         - { wait: 2 }
         - { tap: [220, 649] }
+      expect: "Card number"                        # revyl backend: text that must be on the active screen (confirms we got there)
       sensitive: true
     # The same screen done right — a cover view obscures the window on scenePhase .inactive.
     - name: "Add Card (redacted)"
@@ -36,6 +37,7 @@ ios:
         - { launch: true }
         - { wait: 2 }
         - { tap: [233, 705] }
+      expect: "Card number"
       sensitive: true
 
 android:

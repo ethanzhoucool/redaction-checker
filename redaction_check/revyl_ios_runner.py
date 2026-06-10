@@ -54,6 +54,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -65,19 +66,33 @@ from .contract import ERROR, FAIL, PASS, ScreenResult, Verdict, compile_secret_p
 _SHUTTER_WAIT_S = 3.0
 _SUBPROCESS_TIMEOUT_S = 120
 
-# active~inactive structural correlation at/above this => the backgrounded frame
-# still tracks the live screen => content was not obscured => leak. Measured gap
-# is large (leak ~0.88 vs cover ~0.05) so the 0.35 threshold has wide margin.
-_COVER_CORR_THRESHOLD = 0.35
+# Verdict thresholds on the active<->inactive ZNCC. Measured gap is wide
+# (leak ~0.88 vs cover ~0.05); we leave a deliberate ERROR band between them so a
+# mid-range correlation is flagged for review rather than guessed either way.
+_FAIL_CORR = 0.50        # >= this: inactive still tracks the live screen -> not obscured -> FAIL
+_PASS_CORR = 0.25        # <  this: structurally unrelated -> candidate cover (band between -> review)
+# A real privacy cover (or a dimmed/blurred app) is flat; a structurally-rich
+# *unrelated* frame at low corr is more likely Control Center chrome or the wrong
+# screen, so we refuse to call that a PASS.
+_COVER_FLAT_STD = 15.0
+# An active baseline flatter than this carries no layout to correlate against —
+# navigation probably never reached a real screen, so ERROR rather than guess.
+_MIN_BASELINE_STDDEV = 3.0
+# Control Center dims the backdrop ~60%. If the inactive frame is NOT dimmer than
+# this ratio of the active frame AND still correlates above _CC_SAME_CORR, the app
+# never went inactive (Control Center didn't engage) — we tested nothing.
+_CC_DIM_MAX_RATIO = 0.85
+_CC_SAME_CORR = 0.90
+
 # Small canvas both frames are squished to for the structural comparison.
 _DOWNSCALE = (48, 96)
-# Crop the Control Center status sliver (top) and the home indicator (bottom) so
-# the comparison and OCR see only the app region, not Control Center chrome.
+# Structural compare: crop the Control Center status sliver (top) + home indicator (bottom).
 _CROP_TOP = 0.13
 _CROP_BOTTOM = 0.93
-# An active baseline flatter than this (std) carries no layout to correlate
-# against — we can't decide, so we ERROR rather than guess.
-_MIN_BASELINE_STDDEV = 3.0
+# OCR backstop: a lighter top crop so a top-of-screen secret isn't clipped away.
+_OCR_CROP_TOP = 0.06
+# Screenshot pixel size the default gestures + crop fractions are tuned for.
+_CALIBRATED_SIZE = (1320, 2868)
 
 # Default Control Center gestures, verified on the 1320x2868 Revyl iOS sim. The
 # swipe coordinate space is ~half the screenshot pixel space. Override per-config
@@ -119,51 +134,61 @@ def run_ios_revyl(config: dict, out_dir: str) -> list[ScreenResult]:
     cc_close = {**_CC_CLOSE, **(gestures.get("cc_close") or {})}
 
     results: list[ScreenResult] = []
+    size_warned = bool(gestures)  # skip the size warning if the device's gestures are overridden
     for idx, screen in enumerate(screens):
         name = screen.get("name") or f"screen[{idx}]"
         sensitive = bool(screen.get("sensitive", True))
+        # A malformed nav step or any unexpected error must fail just THIS screen,
+        # never the whole run (matches the per-screen-isolation guarantee).
+        try:
+            expect = screen.get("expect")
 
-        # 1) Navigate to the screen.
-        nav = _navigate(screen, bundle_id)
-        if not nav.ok:
-            results.append(_error_result(name, sensitive, [f"navigation failed: {nav.detail}"]))
-            continue
-        time.sleep(_SHUTTER_WAIT_S)
+            # 1) Navigate to the screen.
+            nav = _navigate(screen, bundle_id)
+            if not nav.ok:
+                results.append(_error_result(name, sensitive, [f"navigation failed: {nav.detail}"]))
+                continue
+            time.sleep(_SHUTTER_WAIT_S)
 
-        # 2) Active baseline capture.
-        active_path = _screenshot(out_dir, name, "active")
-        if active_path is None:
-            results.append(_error_result(name, sensitive, ["`revyl device screenshot` (active) failed"]))
-            continue
+            # 2) Active baseline capture.
+            active_path = _screenshot(out_dir, name, "active")
+            if active_path is None:
+                results.append(_error_result(name, sensitive, ["`revyl device screenshot` (active) failed"]))
+                continue
+            if not size_warned:
+                size_warned = _warn_if_unexpected_size(active_path)
 
-        # 3) Pull Control Center -> app resigns active -> capture the inactive frame.
-        _cc_open(cc_open)
-        time.sleep(_SHUTTER_WAIT_S)
-        inactive_path = _screenshot(out_dir, name, "inactive")
-        # Always dismiss Control Center so the next screen starts from the app.
-        _cc_close(cc_close)
-        time.sleep(1.0)
+            # 3) Pull Control Center -> app resigns active -> capture the inactive frame.
+            _cc_open(cc_open)
+            time.sleep(_SHUTTER_WAIT_S)
+            inactive_path = _screenshot(out_dir, name, "inactive")
+            # Always dismiss Control Center so the next screen starts from the app.
+            _cc_close(cc_close)
+            time.sleep(1.0)
 
-        if inactive_path is None:
+            if inactive_path is None:
+                results.append(
+                    _error_result(name, sensitive,
+                                  ["`revyl device screenshot` (inactive/Control Center) failed"],
+                                  live_image=str(active_path))
+                )
+                continue
+
+            # 4) Decide.
+            verdict = _evaluate_cc(active_path, inactive_path, secret_patterns,
+                                   sensitive=sensitive, expect=expect)
             results.append(
-                _error_result(name, sensitive,
-                              ["`revyl device screenshot` (inactive/Control Center) failed"],
-                              live_image=str(active_path))
+                ScreenResult(
+                    name=name,
+                    platform="ios",
+                    sensitive=sensitive,
+                    verdict=verdict,
+                    live_image=str(active_path),
+                    snapshot_image=str(inactive_path),
+                )
             )
-            continue
-
-        # 4) Decide.
-        verdict = _evaluate_cc(active_path, inactive_path, secret_patterns)
-        results.append(
-            ScreenResult(
-                name=name,
-                platform="ios",
-                sensitive=sensitive,
-                verdict=verdict,
-                live_image=str(active_path),
-                snapshot_image=str(inactive_path),
-            )
-        )
+        except Exception as exc:  # noqa: BLE001 — one bad screen must not kill the run
+            results.append(_error_result(name, sensitive, [f"runner error: {exc!r}"]))
 
     if not screens:
         results.append(
@@ -299,7 +324,7 @@ def _ocr_secrets(inactive_img, secret_patterns) -> list[str]:
         return []
     g = inactive_img.convert("L")
     w, h = g.size
-    g = g.crop((0, int(h * _CROP_TOP), w, int(h * _CROP_BOTTOM)))
+    g = g.crop((0, int(h * _OCR_CROP_TOP), w, int(h * _CROP_BOTTOM)))
     try:
         text = pytesseract.image_to_string(g)
     except Exception:  # noqa: BLE001 — tesseract misconfig must not crash the run
@@ -313,8 +338,15 @@ def _ocr_secrets(inactive_img, secret_patterns) -> list[str]:
     return leaked
 
 
-def _evaluate_cc(active_path: Path, inactive_path: Path, secret_patterns) -> Verdict:
-    """Compare the active and inactive (Control Center) frames and decide."""
+def _evaluate_cc(active_path: Path, inactive_path: Path, secret_patterns,
+                 sensitive: bool = True, expect: str | None = None) -> Verdict:
+    """Compare the active and inactive (Control Center) frames and decide.
+
+    Conservative for a security tool: a PASS is only issued with positive evidence
+    that (a) we reached the intended screen, (b) Control Center actually
+    backgrounded the app, and (c) the content was replaced by a cover. Anything
+    ambiguous is ERROR, never a silent PASS.
+    """
     from PIL import Image
 
     metrics: dict = {}
@@ -325,46 +357,111 @@ def _evaluate_cc(active_path: Path, inactive_path: Path, secret_patterns) -> Ver
         return Verdict(status=ERROR, reasons=[f"failed to open captures: {exc}"], metrics=metrics)
 
     A, I = _prep(active_img), _prep(inactive_img)
-    metrics["active_mean"] = round(float(A.mean()), 1)
-    metrics["inactive_mean"] = round(float(I.mean()), 1)
+    active_mean, inactive_mean = float(A.mean()), float(I.mean())
+    active_std, inactive_std = float(A.std()), float(I.std())
+    metrics.update(active_mean=round(active_mean, 1), inactive_mean=round(inactive_mean, 1),
+                   inactive_std=round(inactive_std, 1))
 
-    # Corroborating OCR — a secret that survives the blur is definitive.
-    leaked = _ocr_secrets(inactive_img, secret_patterns)
-    if leaked:
-        return Verdict(
-            status=FAIL,
-            reasons=[f"Secret pattern(s) recovered from the backgrounded capture: "
-                     f"{', '.join(leaked)}."],
-            leaked_text=leaked,
-            metrics=metrics,
-        )
+    # 0) Baseline sanity: a near-uniform active frame means we never landed on a
+    #    real screen, so there is no content to compare against.
+    if active_std < _MIN_BASELINE_STDDEV:
+        return Verdict(status=ERROR, metrics=metrics, reasons=[
+            "Active screen is near-uniform; navigation may not have reached a real screen."])
 
-    if float(A.std()) < _MIN_BASELINE_STDDEV:
-        return Verdict(
-            status=ERROR,
-            reasons=["Active screen is near-uniform; no content baseline to compare against "
-                     "(navigation may have failed to reach the screen)."],
-            metrics=metrics,
-        )
+    # 1) Confirm we reached the INTENDED screen. A tap on empty space or a
+    #    mis-grounded instruction still exits 0, so without this a PASS could be
+    #    certified against a screen we never tested. Skip only if OCR is
+    #    unavailable (then we can't verify, and say so) — never silently.
+    if expect:
+        active_text = _ocr_text(active_img)
+        if active_text and _norm(expect) not in _norm(active_text):
+            return Verdict(status=ERROR, metrics=metrics, reasons=[
+                f"Expected landmark {expect!r} not visible on the active screen; "
+                f"navigation did not reach it (no verdict)."])
+        if not active_text:
+            metrics["landmark_check"] = "skipped (no OCR available)"
 
     corr = _zncc(A, I)
     metrics["active_inactive_corr"] = round(corr, 3)
 
-    if corr >= _COVER_CORR_THRESHOLD:
-        return Verdict(
-            status=FAIL,
-            reasons=[f"Backgrounded capture still tracks the live screen "
-                     f"(corr={corr:.2f} >= {_COVER_CORR_THRESHOLD}): the app did not replace "
-                     f"its content with a privacy cover when inactive."],
-            metrics=metrics,
-        )
-    return Verdict(
-        status=PASS,
-        reasons=[f"Backgrounded capture is structurally unrelated to the live screen "
-                 f"(corr={corr:.2f} < {_COVER_CORR_THRESHOLD}): a privacy cover obscured the "
-                 f"content when the app went inactive."],
-        metrics=metrics,
-    )
+    # 2) Confirm Control Center actually backgrounded the app BEFORE trusting the
+    #    inactive frame. If it's neither dimmer nor structurally changed, CC never
+    #    engaged — the "inactive" capture is really the live screen, so its content
+    #    is meaningless and judging it would falsely FAIL a secured screen. ERROR.
+    if (inactive_mean / max(active_mean, 1.0)) > _CC_DIM_MAX_RATIO and corr > _CC_SAME_CORR:
+        return Verdict(status=ERROR, metrics=metrics, reasons=[
+            "Backgrounded capture matches the live screen in brightness and layout; "
+            "Control Center did not engage (the app never went inactive). Re-run."])
+
+    # 3) Corroboration: a secret that survives the blur in a genuine backgrounded
+    #    frame is a definitive leak, sensitive or not.
+    leaked = _ocr_secrets(inactive_img, secret_patterns)
+    if leaked:
+        return Verdict(status=FAIL, leaked_text=leaked, metrics=metrics, reasons=[
+            f"Secret pattern(s) recovered from the backgrounded capture: {', '.join(leaked)}."])
+
+    # 4) Non-sensitive screens: content visible when inactive is expected and fine;
+    #    only a recovered secret (handled above) is a violation.
+    if not sensitive:
+        return Verdict(status=PASS, metrics=metrics, reasons=[
+            "Non-sensitive screen; no secret recovered from the backgrounded capture."])
+
+    # 5) Decide on structure, with a deliberate ERROR band in the middle.
+    if corr >= _FAIL_CORR:
+        return Verdict(status=FAIL, metrics=metrics, reasons=[
+            f"Backgrounded capture still tracks the live screen (corr={corr:.2f} >= {_FAIL_CORR}): "
+            f"the app did not obscure its content when inactive."])
+    if corr < _PASS_CORR:
+        # Low correlation alone isn't proof of a cover — it could be Control Center
+        # chrome or the wrong screen. A genuine cover (or a dimmed/blurred app) is
+        # flat; require that before calling it a PASS.
+        if inactive_std <= _COVER_FLAT_STD:
+            return Verdict(status=PASS, metrics=metrics, reasons=[
+                f"Backgrounded capture is unrelated to the live screen (corr={corr:.2f} < {_PASS_CORR}) "
+                f"and flat (std={inactive_std:.1f}): a privacy cover obscured the content."])
+        return Verdict(status=ERROR, metrics=metrics, reasons=[
+            f"Backgrounded capture is unrelated to the live screen (corr={corr:.2f}) but not flat "
+            f"(std={inactive_std:.1f}): likely Control Center chrome or the wrong screen, not a cover. Re-run."])
+    return Verdict(status=ERROR, metrics=metrics, reasons=[
+        f"Inconclusive correlation (corr={corr:.2f}, between {_PASS_CORR} and {_FAIL_CORR}); "
+        f"cannot confirm whether the content was obscured. Re-run."])
+
+
+def _norm(s: str) -> str:
+    """Lowercase, alphanumerics only — tolerant landmark matching against OCR."""
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
+def _ocr_text(img) -> str:
+    """OCR a frame (light top crop) for landmark confirmation. "" if unavailable."""
+    try:
+        import pytesseract
+    except Exception:  # noqa: BLE001
+        return ""
+    g = img.convert("L")
+    w, h = g.size
+    g = g.crop((0, int(h * _OCR_CROP_TOP), w, int(h * _CROP_BOTTOM)))
+    try:
+        return pytesseract.image_to_string(g)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _warn_if_unexpected_size(path: Path) -> bool:
+    """Warn once if the screenshot isn't the size the default gestures are tuned
+    for — the Control Center pull + crops would then be misaligned. Returns True
+    so the caller stops re-checking."""
+    try:
+        from PIL import Image
+        size = Image.open(path).size
+    except Exception:  # noqa: BLE001
+        return True
+    if size != _CALIBRATED_SIZE:
+        print(f"  warning: screenshot is {size[0]}x{size[1]}, but the default Control Center "
+              f"gestures + crops are tuned for {_CALIBRATED_SIZE[0]}x{_CALIBRATED_SIZE[1]}. "
+              f"If iOS verdicts look off, set ios.gestures.cc_open/cc_close for this device.",
+              file=sys.stderr)
+    return True
 
 
 # --------------------------------------------------------------------------- #
