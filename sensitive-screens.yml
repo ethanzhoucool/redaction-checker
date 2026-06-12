@@ -5,9 +5,9 @@
 # Control: OWASP MASVS MSTG-STORAGE-9 / PCI-MSTG.
 
 ios:
-  # backend: "revyl"  -> Revyl cloud sim, Control Center backgrounding (no local Xcode).
-  #          "simctl" -> local Simulator + on-disk SplashBoard snapshot decode (default).
-  backend: "revyl"
+  # backend: "simctl" -> local Simulator + on-disk SplashBoard snapshot decode (default, primary).
+  #          "revyl"  -> Revyl cloud device + Control Center backgrounding (optional tier, no Mac).
+  backend: "simctl"
   bundle_id: com.revyl.redactiondemo
   revyl_app_id: 464a37fa-c56f-46a8-bac7-21cc19ab8397
   udid: "booted"                                  # simctl backend only: UDID or "booted"

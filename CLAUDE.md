@@ -21,11 +21,12 @@ a missed sensitive screen is the whole failure mode.
 
 ## How to drive to each screen
 
-The two platforms reach screens differently — match the config field to the platform.
-First pick the iOS backend with `ios.backend`: **`revyl`** (cloud device, the default —
-no Mac needed; backgrounds via Control Center and decides on an active↔inactive
-correlation) or **`simctl`** (local macOS simulator; decodes the on-disk AAPL snapshot
-for crisp text recovery).
+The two platforms reach screens differently, so match the config field to the platform.
+The tool runs locally with no Revyl account; Revyl's cloud devices are an optional tier.
+For iOS the default and primary backend is **`simctl`** (local macOS simulator; decodes the
+on-disk AAPL snapshot for crisp text recovery), with **`revyl`** (cloud device, no Mac
+needed; backgrounds via Control Center and decides on an active/inactive correlation) as an
+opt-in tier for when there is no Mac. For Android the Revyl cloud device is the primary path.
 
 **iOS (`revyl` backend) — `nav` steps or an `instruction`.** There are no deep links on
 the cloud sim (the app's URL scheme usually isn't registered), and the app switcher

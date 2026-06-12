@@ -36,10 +36,10 @@ pip install -r requirements.txt
 brew install tesseract            # OCR engine (macOS)
 ```
 
-Cloud backends (the default iOS `revyl` path and Android) also need the Revyl CLI and a
-logged-in account: https://github.com/RevylAI/revyl-cli. The local iOS `simctl` backend
-needs a Mac with Xcode and a booted simulator instead. Always run from the repo root with
-the venv active.
+The default iOS path is the local simulator (`simctl`), which needs a Mac with Xcode and a
+booted simulator but no account. The optional iOS Revyl tier and the Android path use the
+Revyl cloud device, so they need the Revyl CLI and a logged-in account:
+https://github.com/RevylAI/revyl-cli. Always run from the repo root with the venv active.
 
 ## Step 1: Find the sensitive screens
 
@@ -56,18 +56,29 @@ sensitive screen is the whole failure mode.
 
 ## Step 2: Describe how to reach each screen in `sensitive-screens.yml`
 
-Pick the iOS backend first with `ios.backend`:
+The tool runs locally with no Revyl account. Revyl's cloud devices are an optional tier:
+opt-in for iOS (run without a Mac), and the primary path for Android.
 
-- `revyl` (default): cloud device, no Mac needed. Backgrounds the app by pulling Control
-  Center and decides on an active-vs-inactive screenshot correlation. Reliable PASS/FAIL,
-  but it cannot quote the exact leaked digits.
-- `simctl` (local macOS sim): decodes the on-disk snapshot for crisp, quotable text.
+iOS, primary, `backend: simctl` (local macOS sim). This is the default. Reach screens with a
+`deeplink` or `launch_args`, set `app_path` to a simulator `.app`, and the tool backgrounds by
+launching another app, then decodes the on-disk snapshot for crisp, quotable text.
 
-iOS `revyl` backend: reach the screen with `nav` steps (`kill`, `launch`, `tap [x,y]`,
-`instruction`, `deeplink`, `wait`) or a single natural-language `instruction`. Always set
-`expect` to a short string visible on the active screen. The runner OCRs the active frame
-and returns ERROR rather than a bogus verdict if `expect` is missing, which is how it knows
-navigation actually landed where you intended.
+```yaml
+ios:
+  backend: "simctl"
+  bundle_id: com.example.app
+  app_path: build/MyApp.app
+  screens:
+    - { name: "Add Card", launch_args: "leaky", sensitive: true }
+```
+
+iOS, optional cloud tier, `backend: revyl` (no Mac needed). Reach the screen with `nav` steps
+(`kill`, `launch`, `tap [x,y]`, `instruction`, `deeplink`, `wait`) or a single
+natural-language `instruction`. Always set `expect` to a short string visible on the active
+screen. The runner OCRs the active frame and returns ERROR rather than a bogus verdict if
+`expect` is missing, which is how it knows navigation actually landed where you intended. This
+tier backgrounds by pulling Control Center and decides on an active-vs-inactive correlation,
+so it gives a reliable PASS/FAIL but cannot quote the exact digits.
 
 ```yaml
 ios:
@@ -81,12 +92,10 @@ ios:
       sensitive: true
 ```
 
-iOS `simctl` backend: reach screens with a `deeplink` or `launch_args`, set `app_path` to a
-simulator `.app`, and the tool backgrounds by launching another app.
-
-Android (`revyl`): reach screens with a natural-language `instruction` describing the
-destination, not the taps. The tool opens the recents overview and judges that thumbnail
-(a live screenshot can read past `FLAG_SECURE`, so it is kept as evidence only).
+Android, primary, `backend: revyl` (Revyl cloud device). Reach screens with a natural-language
+`instruction` describing the destination, not the taps. The tool opens the recents overview
+and judges that thumbnail (a live screenshot can read past `FLAG_SECURE`, so it is kept as
+evidence only). A local-emulator `adb` route is the fallback.
 
 ```yaml
 android:

@@ -1,7 +1,7 @@
 {
   "name": "redaction-checker",
   "title": "redaction-checker: app-switcher and recents leak scanner",
-  "description": "Verify sensitive screens are obscured in the iOS app switcher and Android recents thumbnail before backgrounding leaks them to disk. Maps to OWASP MASVS MSTG-STORAGE-9 / PCI. Claude Code integration: find sensitive screens, run, fix every FAIL, re-run until clean.",
+  "description": "Verify sensitive screens are obscured in the iOS app switcher and Android recents thumbnail before backgrounding leaks them to disk. Maps to OWASP MASVS MSTG-STORAGE-9 / PCI. Runs locally with no account; Revyl cloud devices are an optional tier (opt-in for iOS, primary for Android). Claude Code integration: find sensitive screens, run, fix every FAIL, re-run until clean.",
   "author": "ethanzhoucool",
   "version": "0.1.0",
   "category": "security",

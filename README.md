@@ -4,6 +4,8 @@ Catch sensitive screens that leak into the iOS app switcher and Android recents 
 
 When your app goes to the background, the OS takes a snapshot of the current screen to render the app-switcher card (iOS) or recents thumbnail (Android). If the screen on top is a payment form, an SSN entry, or anything else sensitive, that snapshot gets written to disk in plaintext and shows up the next time someone opens the multitasking view. redaction-checker drives your app to its sensitive screens, backgrounds it, recovers the snapshot the OS actually wrote, and reports PASS or FAIL with the recovered text as evidence.
 
+> Runs locally, no account needed. Revyl's cloud devices are an optional tier: opt-in for iOS so you can check without a Mac, and the primary path for Android. The iOS checks never require Revyl.
+
 ---
 
 ## Why most apps fail
@@ -27,23 +29,11 @@ Both render identically in normal use. Only the snapshot tells the truth.
 
 A redacted screen produces a blank or obscured snapshot. A leaky screen produces a readable one. The whole tool is built around making that difference machine-checkable.
 
-### iOS: two backends
+The core tool runs locally with no Revyl account. Revyl's cloud devices are an optional tier you turn on per platform: opt-in for iOS, so you can run without a Mac, and the primary path for Android, where there is no practical local option. You never need a Revyl account to check iOS.
 
-Revyl cloud device (default, no Xcode or Mac needed), `backend: revyl`.
-The iOS app switcher cannot be opened through the CLI's synthetic touches. The gesture is a swipe-up-and-hold, which `swipe`/`drag` cannot express, and it is a SpringBoard-level system gesture that WebDriverAgent does not reach. So instead of opening the switcher, we trigger the same OS event another way: pulling Control Center makes the app resign active (`scenePhase != .active`), the exact transition the OS uses when it writes the app-switcher snapshot. A correctly built app draws its privacy cover on that transition; a leaky one keeps rendering its content. We screenshot the screen active, pull Control Center, screenshot it inactive, and compare.
+### iOS: local simulator first (primary), Revyl cloud optional
 
-Control Center dims and blurs the backdrop uniformly, which defeats brightness, OCR, and absolute pixel-diff. So the verdict uses a zero-mean normalized cross-correlation (ZNCC) between the active and inactive frames. ZNCC is invariant to global dim/blur and keys only on layout:
-
-```
-active frame  x  inactive frame  -->  corr
-   corr high  ->  inactive still looks like the live screen  ->  not obscured  ->  FAIL
-   corr low   ->  content was replaced by a cover            ->  PASS
-```
-
-Measured on the fixture: leaky around 0.88, redacted around 0.05. The blur means this backend gives a reliable PASS/FAIL but cannot quote the exact leaked digits. Use the local backend below for that.
-
-Local simulator (macOS), `backend: simctl`.
-For a crisp, unblurred recovery, so you can quote the leaked card number verbatim, decode the snapshot the OS wrote to disk. iOS persists the app-switcher card as an Apple `AAPL` container with a misleading `.ktx` extension. We reverse it end to end, with no external binaries:
+Local simulator (macOS), `backend: simctl`. This is the default and the recommended path. It needs a Mac with Xcode and a simulator build of the app, but no account, and it recovers the leaked text crisply so you can quote the exact card number. iOS persists the app-switcher card as an Apple `AAPL` container with a misleading `.ktx` extension. We reverse it end to end, with no external binaries:
 
 ```
 SplashBoard/Snapshots/<scene-with-bundle-id>/*.ktx
@@ -61,34 +51,44 @@ SplashBoard/Snapshots/<scene-with-bundle-id>/*.ktx
 
 The compressed size alone is most of the signal: a blank or redacted snapshot LZFSE-crushes to about 2 KB, while a real leak is 50 KB or more and the text comes back OCR-readable.
 
-### Android: read the recents thumbnail, which the OS blanks
+Revyl cloud device (optional tier), `backend: revyl`. Turn this on when you do not have a Mac. It runs on a cloud device, so it needs a Revyl account but no Xcode. The iOS app switcher cannot be opened through the CLI's synthetic touches: the gesture is a swipe-up-and-hold, which `swipe`/`drag` cannot express, and it is a SpringBoard-level system gesture that WebDriverAgent does not reach. So instead of opening the switcher, we trigger the same OS event another way: pulling Control Center makes the app resign active (`scenePhase != .active`), the exact transition the OS uses when it writes the app-switcher snapshot. A correctly built app draws its privacy cover on that transition; a leaky one keeps rendering its content. We screenshot the screen active, pull Control Center, screenshot it inactive, and compare.
 
-A window with `FLAG_SECURE` (or, on API 33+, `setRecentsScreenshotEnabled(false)`) makes the recents thumbnail come back black. One nuance learned on Revyl's cloud devices: a `revyl device screenshot` of the live secured screen reads straight past `FLAG_SECURE` and captures the content. So the live screen is kept as evidence only and never judged. The verdict is taken from the recents thumbnail, which the OS itself blanks. We drive to the screen, open the recents overview, and check whether that thumbnail went dark.
+Control Center dims and blurs the backdrop uniformly, which defeats brightness, OCR, and absolute pixel-diff. So the verdict uses a zero-mean normalized cross-correlation (ZNCC) between the active and inactive frames. ZNCC is invariant to global dim/blur and keys only on layout:
+
+```
+active frame  x  inactive frame  -->  corr
+   corr high  ->  inactive still looks like the live screen  ->  not obscured  ->  FAIL
+   corr low   ->  content was replaced by a cover            ->  PASS
+```
+
+Measured on the fixture: leaky around 0.88, redacted around 0.05. The tradeoff is that Control Center's blur means this tier gives a reliable PASS/FAIL but cannot quote the exact leaked digits. The local backend above does.
+
+### Android: Revyl cloud device (primary)
+
+For Android the Revyl cloud device is the primary path, with a local-emulator `adb` route as the fallback. A window with `FLAG_SECURE` (or, on API 33+, `setRecentsScreenshotEnabled(false)`) makes the recents thumbnail come back black. One nuance learned on the cloud devices: a `revyl device screenshot` of the live secured screen reads straight past `FLAG_SECURE` and captures the content. So the live screen is kept as evidence only and never judged. The verdict is taken from the recents thumbnail, which the OS itself blanks. We drive to the screen, open the recents overview, and check whether that thumbnail went dark.
 
 ```
 drive to screen --> live screenshot (evidence only)
         |
         v
-open recents --> recents thumbnail   (cloud device primary; adb fallback for a local emulator)
+open recents --> recents thumbnail   (Revyl cloud device primary; adb fallback for a local emulator)
         |
         v
   black? --> PASS        readable? --> OCR --> secret regex --> FAIL
 ```
 
-Primary capture backend is Revyl (`revyl device`). A local-emulator `adb` path is the fallback.
-
 ### Shared verdict engine
 
 Both platforms feed one engine: OCR, secret-regex (SSN / PAN / CVV), and blank/blur/compressed-size heuristics, producing PASS or FAIL with side-by-side evidence images and a markdown/HTML report.
 
-| Stage | iOS (Revyl, default) | Android (Revyl) |
+| Stage | iOS (local simctl, default) | Android (Revyl cloud, primary) |
 |---|---|---|
-| Drive to screen | `nav` steps / `instruction` | `revyl device instruction` (natural language) |
-| Make it inactive | pull Control Center | open the recents overview |
-| Capture | screenshot active + inactive | recents thumbnail |
-| Decide | active vs inactive correlation (ZNCC) | OCR + regex + blackness |
+| Drive to screen | `deeplink` / `launch_args` | `revyl device instruction` (natural language) |
+| Make it inactive | launch another app | open the recents overview |
+| Capture | decode the on-disk AAPL snapshot | recents thumbnail |
+| Decide | OCR + regex + compressed size | OCR + regex + blackness |
 
-The local iOS backend (`simctl`) instead reaches screens via `deeplink`/`launch_args`, backgrounds by launching another app, decodes the AAPL snapshot from disk, and decides on OCR + regex + compressed size.
+The optional iOS Revyl tier (`backend: revyl`) instead reaches screens via `nav` steps or an `instruction`, backgrounds by pulling Control Center, and decides on the active-vs-inactive correlation (ZNCC), so it needs no Mac.
 
 ---
 
@@ -103,11 +103,11 @@ pip install pillow numpy pytesseract texture2ddecoder pyyaml
 # OCR engine (macOS)
 brew install tesseract
 
-# Revyl CLI (cloud capture backend)
-# https://github.com/RevylAI/revyl-cli
+# Optional, only for the Revyl cloud tier (iOS without a Mac, and Android):
+# Revyl CLI, https://github.com/RevylAI/revyl-cli
 ```
 
-The default iOS backend (`revyl`) runs anywhere the Revyl CLI does, with no Mac or Xcode required. The local iOS backend (`simctl`) is macOS only: it reads from `~/Library/Developer/CoreSimulator/Devices` and decodes LZFSE via the system `libcompression.dylib` (no Xcode command-line decoder needed).
+The default iOS backend (`simctl`) is macOS only: it reads from `~/Library/Developer/CoreSimulator/Devices` and decodes LZFSE via the system `libcompression.dylib` (no Xcode command-line decoder needed). The optional iOS Revyl tier and the Android path use the Revyl CLI instead and run anywhere it does, with no Mac required.
 
 ---
 
@@ -126,19 +126,16 @@ A minimal config:
 
 ```yaml
 ios:
-  backend: "revyl"            # "revyl" (cloud device, default) or "simctl" (local macOS sim)
+  backend: "simctl"           # "simctl" (local macOS sim, default) or "revyl" (cloud tier, no Mac)
   bundle_id: com.revyl.redactiondemo
-  revyl_app_id: "<your-revyl-app-id>"
+  app_path: build/Cashly.app  # the simulator build to install and check
   screens:
-    # revyl backend reaches the screen via `nav` (or a single `instruction`):
-    - name: "Add Card"
-      nav: [ { launch: true }, { wait: 2 }, { instruction: "open the add-card screen" } ]
-      expect: "Card number"   # text that must be on the active screen, confirms nav actually got there
-      sensitive: true
-    # simctl backend instead uses `deeplink` or `launch_args`.
+    # simctl backend reaches the screen via `deeplink` or `launch_args`:
+    - { name: "Add Card", launch_args: "leaky", sensitive: true }
+    # the optional revyl tier instead uses `nav` steps (or an `instruction`) plus an `expect`.
 
 android:
-  backend: "revyl"
+  backend: "revyl"            # Revyl cloud device is the primary path for Android
   revyl_app_id: "<your-revyl-app-id>"
   package: com.revyl.redactiondemo
   screens:

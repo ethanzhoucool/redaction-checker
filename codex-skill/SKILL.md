@@ -28,25 +28,24 @@ pip install -r requirements.txt
 brew install tesseract
 ```
 
-Cloud backends (default iOS `revyl`, Android) need the Revyl CLI and a logged-in account:
-https://github.com/RevylAI/revyl-cli. The local iOS `simctl` backend needs a Mac with Xcode
-and a booted simulator. Run from the repo root with the venv active.
+The default iOS path is the local simulator (`simctl`): a Mac with Xcode and a booted
+simulator, no account. The optional iOS Revyl tier and the Android path use the Revyl cloud
+device, so they need the Revyl CLI and a logged-in account: https://github.com/RevylAI/revyl-cli.
+Run from the repo root with the venv active.
 
 ## Step 1: Configure screens
 
 ```yaml
 ios:
-  backend: "revyl"            # "revyl" (cloud) or "simctl" (local macOS sim)
+  backend: "simctl"           # "simctl" (local macOS sim, default) or "revyl" (cloud tier, no Mac)
   bundle_id: com.example.app
-  revyl_app_id: "<your-revyl-app-id>"
+  app_path: build/MyApp.app   # simulator build to install and check
   screens:
-    - name: "Add Card"
-      nav: [ { launch: true }, { wait: 2 }, { instruction: "open the add-card screen" } ]
-      expect: "Card number"   # text that must be on the active screen
-      sensitive: true
+    - { name: "Add Card", launch_args: "leaky", sensitive: true }
+    # optional revyl tier instead uses `nav` steps (or an `instruction`) plus an `expect`.
 
 android:
-  backend: "revyl"
+  backend: "revyl"            # Revyl cloud device is the primary path for Android
   revyl_app_id: "<your-revyl-app-id>"
   package: com.example.app
   screens:
