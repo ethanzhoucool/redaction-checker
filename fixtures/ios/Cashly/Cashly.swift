@@ -70,6 +70,7 @@ struct HomeView: View {
 }
 
 struct PaymentView: View {
+    @EnvironmentObject var router: Router
     let secured: Bool
     var body: some View {
         NavigationStack {
@@ -92,6 +93,13 @@ struct PaymentView: View {
                 }
             }
             .navigationTitle(secured ? "Add Card (secured)" : "Add Card")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { router.route = .home } label: {
+                        Label("Back", systemImage: "chevron.left")
+                    }
+                }
+            }
         }
     }
 }

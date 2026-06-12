@@ -9,6 +9,8 @@ Exit code is non-zero if any sensitive screen FAILS (so it can gate CI).
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,6 +29,10 @@ def main(argv=None) -> int:
                     help="alternative to the positional config path")
     ap.add_argument("--platform", choices=["ios", "android", "both"], default="both")
     ap.add_argument("--out", default="report", help="output directory for the report + evidence")
+    ap.add_argument("--open", dest="open_report", action="store_true", default=None,
+                    help="open the HTML report when the run finishes (default: on when interactive)")
+    ap.add_argument("--no-open", dest="open_report", action="store_false",
+                    help="do not open the report (default in CI / non-interactive)")
     args = ap.parse_args(argv)
 
     cfg_path = Path(args.config or args.config_flag or "sensitive-screens.yml")
@@ -73,11 +79,38 @@ def main(argv=None) -> int:
     print("=" * 56)
     print(f"report: {Path(args.out) / 'report.md'}")
     print(f"{failed} FAIL / {errored} ERROR / {len(results)} screens")
+
+    # Open the report when asked, or by default when run interactively. Skipped in
+    # CI / piped runs so it never tries to pop a browser on a build agent.
+    should_open = args.open_report if args.open_report is not None else sys.stdout.isatty()
+    if should_open:
+        _open_report(args.out)
+
     # Non-zero on FAIL (compliance) and on ERROR (the check didn't complete) so a
     # broken run never reads as a green CI pass.
     if failed:
         return 1
     return 2 if errored else 0
+
+
+def _open_report(out_dir) -> None:
+    """Open the generated report in the default viewer. Best-effort: a failure to
+    open never changes the run's exit code."""
+    out = Path(out_dir)
+    target = out / "report.html"
+    if not target.exists():
+        target = out / "report.md"
+    if not target.exists():
+        return
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", str(target)], check=False)
+        elif sys.platform.startswith("linux"):
+            subprocess.run(["xdg-open", str(target)], check=False)
+        elif os.name == "nt":
+            os.startfile(str(target))  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
