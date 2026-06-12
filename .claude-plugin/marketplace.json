@@ -1,0 +1,27 @@
+{
+  "name": "redaction-checker",
+  "title": "redaction-checker: app-switcher and recents leak scanner",
+  "description": "Verify sensitive screens are obscured in the iOS app switcher and Android recents thumbnail before backgrounding leaks them to disk. Maps to OWASP MASVS MSTG-STORAGE-9 / PCI. Claude Code integration: find sensitive screens, run, fix every FAIL, re-run until clean.",
+  "author": "ethanzhoucool",
+  "version": "0.1.0",
+  "category": "security",
+  "icon": "shield-check",
+  "install": {
+    "plugin": "redaction-checker@redaction-checker"
+  },
+  "triggers": [
+    "app switcher leak",
+    "recents thumbnail leak",
+    "screen not obscured in background",
+    "privacy overlay",
+    "scenePhase inactive",
+    "FLAG_SECURE",
+    "setRecentsScreenshotEnabled",
+    "MASVS storage",
+    "MSTG-STORAGE-9",
+    "PCI mobile",
+    "mobile pentest",
+    "sensitive screen snapshot",
+    "redaction check"
+  ]
+}

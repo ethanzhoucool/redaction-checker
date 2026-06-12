@@ -1,0 +1,21 @@
+{
+  "version": "0.1.0",
+  "name": "redaction-checker",
+  "description": "Check that sensitive screens are obscured in the iOS app switcher and Android recents thumbnail (OWASP MASVS MSTG-STORAGE-9 / PCI)",
+  "organization": {
+    "name": "Revyl",
+    "url": "https://revyl.com"
+  },
+  "references": [
+    "https://mas.owasp.org/MASTG/tests/ios/MASVS-STORAGE/MASTG-TEST-0054/",
+    "https://mas.owasp.org/MASTG/tests/android/MASVS-STORAGE/MASTG-TEST-0011/",
+    "https://developer.apple.com/documentation/uikit/app_and_environment/scenes/preparing_your_ui_to_run_in_the_background",
+    "https://developer.android.com/reference/android/view/WindowManager.LayoutParams#FLAG_SECURE",
+    "https://developer.android.com/reference/android/app/Activity#setRecentsScreenshotEnabled(boolean)"
+  ],
+  "keywords": [
+    "ios", "android", "app-switcher", "recents", "snapshot", "privacy",
+    "masvs", "mstg-storage-9", "pci", "flag-secure", "scenephase",
+    "pentest", "compliance", "swift", "react-native", "expo"
+  ]
+}

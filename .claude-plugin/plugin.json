@@ -1,0 +1,26 @@
+{
+  "name": "redaction-checker",
+  "owner": {
+    "name": "ethanzhoucool"
+  },
+  "plugins": [
+    {
+      "name": "redaction-checker",
+      "source": "../",
+      "category": "security",
+      "tags": [
+        "ios",
+        "android",
+        "app-switcher",
+        "recents",
+        "privacy",
+        "masvs",
+        "pci",
+        "flag-secure",
+        "pentest",
+        "compliance"
+      ],
+      "strict": true
+    }
+  ]
+}

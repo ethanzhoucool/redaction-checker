@@ -1,0 +1,4 @@
+interface:
+  display_name: "App-Switcher Redaction Check"
+  short_description: "Verify sensitive screens are obscured in the app switcher / recents"
+  default_prompt: "Use $app-switcher-redaction-check to find sensitive screens, run redaction-checker, fix every FAIL, and rerun until the report is clean."
